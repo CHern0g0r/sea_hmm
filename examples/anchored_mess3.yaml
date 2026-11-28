@@ -1,0 +1,7 @@
+type: anchored
+hmm: mess3.yaml
+anchor: prefix_end
+target_probs:
+  - [0.80, 0.10, 0.10]
+  - [0.10, 0.80, 0.10]
+  - [0.10, 0.10, 0.80]

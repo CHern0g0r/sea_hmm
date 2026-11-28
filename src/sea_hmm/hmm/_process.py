@@ -6,24 +6,14 @@ from pomegranate.distributions import Categorical, Normal
 from pomegranate.hmm import DenseHMM
 from torch import Tensor
 
-from ..data import TrajectoryBatch
-from ..data.trajectory import _normalize_lengths
-
-
-def _normalize_probabilities(
-    values: Sequence[float] | Sequence[Sequence[float]] | Tensor,
-    shape: tuple[int, ...],
-    name: str,
-) -> Tensor:
-    probabilities = torch.as_tensor(values, dtype=torch.float64, device="cpu").detach()
-    if probabilities.shape != shape or not torch.isfinite(probabilities).all():
-        raise ValueError(f"{name} must have shape {shape} and contain finite values")
-    totals = probabilities.sum(dim=-1, keepdim=True)
-    if (probabilities < 0).any() or not torch.allclose(
-        totals, torch.ones_like(totals), rtol=0, atol=1e-6
-    ):
-        raise ValueError(f"{name} must contain nonnegative probabilities that sum to one")
-    return probabilities / totals
+from .._probabilities import _normalize_probabilities
+from ..data.trajectory import (
+    Lengths,
+    TrajectoryBatch,
+    _normalize_lengths,
+    _prepare_observations,
+    _validate_count,
+)
 
 
 def _stationary_distribution(transition: Tensor) -> Tensor:
@@ -38,22 +28,30 @@ def _stationary_distribution(transition: Tensor) -> Tensor:
     return stationary / stationary.sum()
 
 
-class _Process:
+class StateEmittingHMM:
+    """A fixed-parameter HMM with one emitting state per observation."""
+
     def __init__(
         self,
-        transition: Tensor,
+        transition_probs: Sequence[Sequence[float]] | Tensor,
         *,
-        initial_probs: Sequence[float] | Tensor | None,
-        device: str | torch.device | None,
-        dtype: torch.dtype,
-        categorical: Tensor | None = None,
-        gaussian: tuple[Tensor, Tensor] | None = None,
+        initial_probs: Sequence[float] | Tensor | None = None,
+        device: str | torch.device | None = None,
+        dtype: torch.dtype = torch.float64,
+        categorical: Sequence[Sequence[float]] | Tensor | None = None,
+        gaussian: tuple[Sequence[float] | Tensor, Sequence[float] | Tensor] | None = None,
     ) -> None:
         if dtype not in (torch.float32, torch.float64):
             raise ValueError("dtype must be torch.float32 or torch.float64")
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
+        if (categorical is None) == (gaussian is None):
+            raise ValueError("provide exactly one of categorical probabilities or Gaussian parameters")
+        transition = torch.as_tensor(transition_probs, dtype=torch.float64, device="cpu")
+        if transition.ndim != 2 or not transition.shape[0]:
+            raise ValueError("transition_probs must be a nonempty square matrix")
         num_states = transition.shape[0]
+        transition = _normalize_probabilities(transition, (num_states, num_states), "transition_probs")
         initial = (
             _stationary_distribution(transition)
             if initial_probs is None
@@ -64,16 +62,26 @@ class _Process:
         initial = initial.to(dtype=dtype)
         self._categorical = None
         if categorical is not None:
-            categorical = categorical.to(dtype=dtype)
+            categorical = torch.as_tensor(categorical, dtype=torch.float64, device="cpu")
+            if categorical.ndim != 2 or not categorical.shape[1]:
+                raise ValueError("categorical probabilities must have a nonempty symbol axis")
+            categorical = _normalize_probabilities(
+                categorical, (num_states, categorical.shape[1]), "categorical probabilities"
+            ).to(dtype=dtype)
             distributions = [Categorical(probs[None], frozen=True) for probs in categorical]
             self._categorical = categorical.to(device=device)
             self._log_categorical = self._categorical.log()
         else:
             assert gaussian is not None
-            means, stds = (parameters.to(dtype=dtype) for parameters in gaussian)
+            means, stds = (
+                torch.as_tensor(values, dtype=dtype, device="cpu").detach().clone()
+                for values in gaussian
+            )
             variances = stds.square()
+            if means.shape != (num_states,) or stds.shape != means.shape:
+                raise ValueError("provide one Gaussian mean and standard deviation per state")
             if not torch.isfinite(means).all() or not (
-                torch.isfinite(variances) & (variances > 0)
+                (stds > 0) & torch.isfinite(variances) & (variances > 0)
             ).all():
                 raise ValueError(
                     "Gaussian parameters must have finite means and positive finite variances in dtype"
@@ -108,100 +116,135 @@ class _Process:
     def num_states(self) -> int:
         return self._initial.numel()
 
+    @property
+    def num_symbols(self) -> int | None:
+        """Number of categorical symbols, or None for continuous observations."""
+        return None if self._categorical is None else self._categorical.shape[1]
+
+    @property
+    def observation_dtype(self) -> torch.dtype:
+        return self.dtype if self.num_symbols is None else torch.long
+
     @torch.no_grad()
     def sample(
         self,
-        lengths: int | Sequence[int] | Tensor,
+        lengths: Lengths,
         *,
         generator: torch.Generator | None = None,
     ) -> TrajectoryBatch:
         """Sample observations and their exact hidden states using the model device."""
         lengths = _normalize_lengths(lengths)
-        batch_size, width = len(lengths), max(lengths, default=0)
         lengths_tensor = torch.tensor(lengths, device=self.device, dtype=torch.long)
-        states = torch.empty((batch_size, width + 1), device=self.device, dtype=torch.long)
-        observation_dtype = torch.long if self._categorical is not None else self.dtype
-        if not batch_size:
-            observations = torch.empty((0, 0), device=self.device, dtype=observation_dtype)
-            return TrajectoryBatch(observations, states, lengths_tensor)
-
-        states[:, 0] = torch.multinomial(self._initial, batch_size, True, generator=generator)
-        for t in range(width):
-            next_probs = self._transition[states[:, t]]
-            states[:, t + 1] = torch.multinomial(next_probs, 1, generator=generator).squeeze(-1)
-
-        if width == 0:
-            observations = torch.empty((batch_size, 0), device=self.device, dtype=observation_dtype)
-        elif self._categorical is not None:
-            emission_probs = self._categorical[states[:, 1:].reshape(-1)]
-            observations = torch.multinomial(emission_probs, 1, generator=generator)
-            observations = observations.reshape(batch_size, width)
-        else:
-            emitting_states = states[:, :-1]
-            noise = torch.randn((batch_size, width), device=self.device, dtype=self.dtype, generator=generator)
-            observations = self._means[emitting_states] + self._stds[emitting_states] * noise
-
-        positions = torch.arange(width + 1, device=self.device)
-        observations.masked_fill_(positions[:-1] >= lengths_tensor[:, None], 0)
-        states.masked_fill_(positions > lengths_tensor[:, None], -1)
+        width = max(lengths, default=0)
+        observations, states = self._sample_paths(self._initial.expand(len(lengths), -1), width, generator)
+        padding = torch.arange(width, device=self.device) >= lengths_tensor[:, None]
+        observations.masked_fill_(padding, 0)
+        states.masked_fill_(padding, -1)
         return TrajectoryBatch(observations, states, lengths_tensor)
 
+    def _sample_paths(self, first_state_probs: Tensor, width: int, generator) -> tuple[Tensor, Tensor]:
+        shape = (first_state_probs.shape[0], width)
+        states = torch.empty(shape, device=self.device, dtype=torch.long)
+        if states.numel() == 0:
+            return states.to(dtype=self.observation_dtype), states
+
+        states[:, 0] = torch.multinomial(first_state_probs, 1, generator=generator).squeeze(-1)
+        for i in range(1, width):
+            next_probs = self._transition[states[:, i - 1]]
+            states[:, i] = torch.multinomial(next_probs, 1, generator=generator).squeeze(-1)
+
+        if self._categorical is not None:
+            emission_probs = self._categorical[states.flatten()]
+            observations = torch.multinomial(emission_probs, 1, generator=generator).reshape(shape)
+        else:
+            noise = torch.randn(shape, device=self.device, dtype=self.dtype, generator=generator)
+            observations = self._means[states] + self._stds[states] * noise
+        return observations, states
+
     @torch.no_grad()
-    def filter(self, observations: Tensor, *, lengths: Sequence[int] | Tensor | None = None) -> Tensor:
-        """Return P(Z_t | Y[:t]) at every valid prefix, including the empty prefix."""
+    def filter(self, observations: Tensor, *, lengths: Lengths | None = None) -> Tensor:
+        """Return the posterior of each emitting state given observations through that state."""
         return self._track(observations, lengths, smoothing=False)
 
     @torch.no_grad()
-    def smooth(self, observations: Tensor, *, lengths: Sequence[int] | Tensor | None = None) -> Tensor:
-        """Return P(Z_t | Y[:L]) at every valid state position in each length-L row."""
+    def smooth(self, observations: Tensor, *, lengths: Lengths | None = None) -> Tensor:
+        """Return the posterior of each emitting state given the full valid sequence."""
         return self._track(observations, lengths, smoothing=True)
 
     def _track(
-        self, observations: Tensor, lengths: Sequence[int] | Tensor | None, *, smoothing: bool
+        self, observations: Tensor, lengths: Lengths | None, *, smoothing: bool
     ) -> Tensor:
-        observations = torch.as_tensor(observations, device=self.device)
-        if observations.ndim == 1:
-            observations = observations.unsqueeze(0)
-        if observations.ndim != 2:
-            raise ValueError("observations must have shape [length] or [batch, observation_width]")
-        batch_size, width = observations.shape
-        lengths = (width,) * batch_size if lengths is None else _normalize_lengths(lengths)
-        if len(lengths) != batch_size or any(length > width for length in lengths):
-            raise ValueError("lengths must give one valid observation length per batch row")
+        observations, lengths = _prepare_observations(observations, lengths, self.device)
+        result = self._initial.new_zeros((*observations.shape, self.num_states))
+        for indices, emissions, forward, evidence in self._forward_groups(observations, lengths):
+            if torch.isneginf(evidence).any():
+                raise ValueError("state posteriors require a nonzero sequence likelihood")
+            if smoothing:
+                forward = forward + self._hmm.backward(emissions=emissions)
+            result[indices, :forward.shape[1]] = torch.softmax(forward, dim=-1)
+        return result
 
+    def _forward_groups(self, observations: Tensor, lengths: tuple[int, ...]):
         groups = defaultdict(list)
         for row, length in enumerate(lengths):
-            groups[length].append(row)
+            if length:
+                groups[length].append(row)
 
-        result = self._initial.new_zeros((batch_size, width + 1, self.num_states))
         for length, rows in groups.items():
             indices = torch.tensor(rows, device=self.device)
-            if length == 0:
-                result[indices, 0] = self._initial
-                continue
-
             valid = observations[:, :length].index_select(0, indices)
             emissions = self._log_emissions(valid)
             forward = self._hmm.forward(emissions=emissions)
-            if not torch.isfinite(torch.logsumexp(forward[:, -1], dim=-1)).all():
-                raise ValueError("an observation sequence has zero or non-finite likelihood")
+            # Pomegranate can produce NaNs after an all-impossible prefix.
+            impossible = torch.isneginf(forward).all(dim=-1).any(dim=-1)
+            evidence = torch.logsumexp(forward[:, -1], dim=-1).masked_fill(impossible, -torch.inf)
+            if not (torch.isfinite(evidence) | torch.isneginf(evidence)).all():
+                raise ValueError("non-finite sequence log likelihood")
+            yield indices, emissions, forward, evidence
 
-            if smoothing:
-                backward = self._hmm.backward(emissions=emissions)
-                beliefs = torch.softmax(forward + backward, dim=-1)
-            elif self._categorical is not None:
-                beliefs = torch.softmax(forward, dim=-1)
-            else:
-                # Gaussian forward messages at Z_t already include Y_t.
-                predicted = torch.softmax(forward[:, :-1], dim=-1) @ self._transition
-                prior = self._initial.expand(len(rows), 1, self.num_states)
-                beliefs = torch.cat((prior, predicted), dim=1)
-            result[indices, :length + 1] = beliefs
+    @torch.no_grad()
+    def log_likelihood(self, observations: Tensor, *, lengths: Lengths | None = None) -> Tensor:
+        """Return one sequence log likelihood per row, including zero for an empty row."""
+        observations, lengths = _prepare_observations(observations, lengths, self.device)
+        result = self._initial.new_zeros(len(lengths))
+        for indices, _, _, evidence in self._forward_groups(observations, lengths):
+            result[indices] = evidence
         return result
+
+    def _prefix_summary(self, observations: Tensor, lengths: tuple[int, ...]) -> tuple[Tensor, Tensor]:
+        evidence = self._initial.new_zeros(len(lengths))
+        next_probs = self._initial.expand(len(lengths), -1).clone()
+        for indices, _, forward, log_likelihood in self._forward_groups(observations, lengths):
+            evidence[indices] = log_likelihood
+            impossible = torch.isneginf(log_likelihood)[:, None]
+            last = forward[:, -1].masked_fill(impossible, 0)
+            predicted = torch.softmax(last, dim=-1) @ self._transition
+            next_probs[indices] = predicted.masked_fill(impossible, 0)
+        return evidence, next_probs
+
+    @torch.no_grad()
+    def sample_continuations(
+        self,
+        observations: Tensor,
+        k: int,
+        *,
+        lengths: Lengths | None = None,
+        num_samples: int = 1,
+        generator: torch.Generator | None = None,
+    ) -> Tensor:
+        """Sample suffixes conditional on each prefix, with shape [batch, num_samples, k]."""
+        _validate_count(k, "k")
+        _validate_count(num_samples, "num_samples", minimum=1)
+        observations, lengths = _prepare_observations(observations, lengths, self.device)
+        evidence, next_probs = self._prefix_summary(observations, lengths)
+        if torch.isneginf(evidence).any():
+            raise ValueError("continuations require a nonzero prefix likelihood")
+        starts = next_probs.repeat_interleave(num_samples, dim=0)
+        suffixes, _ = self._sample_paths(starts, k, generator)
+        return suffixes.reshape(len(lengths), num_samples, k)
 
     def _log_emissions(self, observations: Tensor) -> Tensor:
         batch_size, width = observations.shape
-        neutral = self._initial.new_zeros((batch_size, 1, self.num_states))
         if observations.is_complex() or observations.dtype == torch.bool:
             raise ValueError("observations must be real numbers")
         if self._categorical is not None:
@@ -210,13 +253,11 @@ class _Process:
                 observations.is_floating_point() and not (observations == observations.trunc()).all()
             ):
                 raise ValueError(f"categorical observations must be integer IDs in [0, {num_symbols})")
-            log_probs = self._log_categorical.T[observations.long()]
-            return torch.cat((neutral, log_probs), dim=1)
+            return self._log_categorical.T[observations.long()]
 
         values = observations.to(dtype=self.dtype).reshape(-1, 1)
         if not torch.isfinite(values).all():
             raise ValueError("Gaussian observations must be finite in dtype")
-        log_probs = torch.stack(
+        return torch.stack(
             [distribution.log_probability(values) for distribution in self._hmm.distributions], dim=-1
         ).reshape(batch_size, width, self.num_states)
-        return torch.cat((log_probs, neutral), dim=1)

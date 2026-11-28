@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Sampling and state tracking for HMM experiments"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["torch>=2.0", "pomegranate==1.1.2"]
+dependencies = ["torch>=2.0", "pomegranate==1.1.2", "PyYAML>=6"]
 
 [project.optional-dependencies]
 test = ["pytest>=7"]

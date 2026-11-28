@@ -1,0 +1,7 @@
+type: gaussian_regime_switching
+params:
+  transition_probs:
+    - [0.95, 0.05]
+    - [0.05, 0.95]
+  means: [-1.0, 1.0]
+  stds: [1.0, 1.0]

@@ -1,0 +1,4 @@
+type: mess3
+params:
+  switch_prob: 0.05
+  match_prob: 0.85

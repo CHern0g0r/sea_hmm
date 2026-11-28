@@ -1,0 +1,11 @@
+type: static
+components:
+  - mess3.yaml
+  - type: mess3
+    params:
+      switch_prob: 0.25
+      match_prob: 0.55
+prior: [0.5, 0.5]
+target_probs:
+  - [0.85, 0.15]
+  - [0.15, 0.85]

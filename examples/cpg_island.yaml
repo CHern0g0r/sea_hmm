@@ -1,0 +1,4 @@
+type: cpg_island
+params:
+  background_to_island: 0.001
+  island_to_background: 0.01

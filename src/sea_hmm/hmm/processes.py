@@ -3,11 +3,12 @@ from collections.abc import Sequence
 import torch
 from torch import Tensor
 
-from ._process import _Process, _normalize_probabilities
+from .._probabilities import _normalize_probabilities
+from ._process import StateEmittingHMM
 
 
-class Mess3(_Process):
-    """Three states with a categorical emission that favors the destination state ID."""
+class Mess3(StateEmittingHMM):
+    """Three states with categorical emissions that favor the emitting state's ID."""
 
     def __init__(
         self,
@@ -33,10 +34,10 @@ class Mess3(_Process):
         )
 
 
-class CpGIslandModel(_Process):
+class CpGIslandModel(StateEmittingHMM):
     """Eight states ordered by region (background, island), then base (A, C, G, T).
 
-    A state stores the previous base. Each edge emits the destination state's base.
+    A state emits the current base.
     """
 
     def __init__(
@@ -85,7 +86,7 @@ class CpGIslandModel(_Process):
         )
 
 
-class GaussianRegimeSwitchingHMM(_Process):
+class GaussianRegimeSwitchingHMM(StateEmittingHMM):
     """An HMM with a scalar Gaussian emission from the current regime."""
 
     def __init__(
@@ -98,14 +99,6 @@ class GaussianRegimeSwitchingHMM(_Process):
         device: str | torch.device | None = None,
         dtype: torch.dtype = torch.float64,
     ) -> None:
-        means = torch.as_tensor(means, dtype=torch.float64, device="cpu").detach().clone()
-        stds = torch.as_tensor(stds, dtype=torch.float64, device="cpu").detach().clone()
-        if means.ndim != 1 or not means.numel() or not torch.isfinite(means).all():
-            raise ValueError("means must be a nonempty vector of finite values")
-        if stds.shape != means.shape or not (torch.isfinite(stds) & (stds > 0)).all():
-            raise ValueError("stds must contain one positive finite value per mean")
-        num_states = means.numel()
-        transition = _normalize_probabilities(transition_probs, (num_states, num_states), "transition_probs")
         super().__init__(
-            transition, gaussian=(means, stds), initial_probs=initial_probs, device=device, dtype=dtype
+            transition_probs, gaussian=(means, stds), initial_probs=initial_probs, device=device, dtype=dtype
         )

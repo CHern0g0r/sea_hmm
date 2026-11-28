@@ -1,21 +1,46 @@
-# SEA HMM processes
+# SEA HMM experiments
 
-Install with `python -m pip install -e .`. For CUDA, use a CUDA-enabled PyTorch build. The models use CUDA when available and accept an explicit `device` such as `"cpu"` or `"cuda:0"`.
+Install with `python -m pip install -e .`. Sampling and inference use CUDA when available. Install a CUDA-enabled PyTorch build for GPU use, or set `device="cpu"` to run on CPU.
+
+## State-emitting HMMs
 
 ```python
-from sea_hmm.hmm import CpGIslandModel, GaussianRegimeSwitchingHMM, Mess3
+from sea_hmm.config import load_hmm
 
-model = Mess3()
+model = load_hmm("examples/mess3.yaml")
 batch = model.sample([128, 64, 0])
 filtered = model.filter(batch.observations, lengths=batch.lengths)
 smoothed = model.smooth(batch.observations, lengths=batch.lengths)
-exact = batch.hidden_states
+log_likelihood = model.log_likelihood(batch.observations, lengths=batch.lengths)
 ```
 
-For a row with `L` observations, the valid hidden state positions are `0` through `L`. Filtering at `t` uses `observations[:t]`. Smoothing uses `observations[:L]` at every state position. Inference always returns a batch dimension, with shape `[batch, observation_width + 1, num_states]`. Use `batch.lengths` to identify valid positions. Padding is zero in observations and posterior probabilities, and `-1` in exact hidden paths.
+Each trajectory has one sampled hidden state per observation. At position `i`, filtering conditions on observations through `i` and smoothing conditions on the entire valid sequence. Posteriors have shape `[batch, observation_width, num_states]`. Observations and posteriors use zero padding and hidden paths use `-1`. Empty sequences have log likelihood zero.
 
-Mess3 uses symbol IDs `0, 1, 2`. The CpG Island Model uses IDs `0, 1, 2, 3` for `A, C, G, T`, with hidden states `0–3` for background and `4–7` for island, in the same base order. Both categorical models emit from the destination state, so `observations[t]` depends on `hidden_states[t + 1]` given the path. The Gaussian model emits scalar values from `hidden_states[t]`.
+The process YAML examples are [Mess3](examples/mess3.yaml), [CpG Island Model](examples/cpg_island.yaml), and [Gaussian Regime-Switching HMM](examples/gaussian_regime_switching.yaml). Load each with `load_hmm`. Their `params` configure the process and can include an `initial_probs` vector for the first emitting state. Mess3 emits IDs `0–2`. CpG emits IDs `0–3` for `A, C, G, T`, with states `0–3` for background and `4–7` for island in the same base order. The Gaussian process emits continuous scalars.
 
-An `initial_probs` vector overrides the stationary start. For example, `Mess3(initial_probs=[1, 0, 0])` starts in state zero. To reproduce a batch, pass a seeded generator on the model device, such as `torch.Generator(device=model.device).manual_seed(42)`, to `sample`.
+## Latent intent and external targets
+
+```python
+from sea_hmm.config import load_experiment
+
+anchored = load_experiment("examples/anchored_mess3.yaml")
+pair = anchored.sample([8, 12], k=4)
+observations = pair.trajectory.observations
+short = anchored.predict_target(observations, lengths=pair.prefix_lengths, anchors=pair.anchors)
+long = anchored.predict_target(observations, lengths=pair.trajectory.lengths, anchors=pair.anchors)
+targets = pair.targets
+
+static = load_experiment("examples/static_mess3.yaml")
+pair = static.sample([8, 12], k=4)
+observations = pair.trajectory.observations
+regime_probs = static.intent_posterior(observations, lengths=pair.prefix_lengths)
+suffixes = static.sample_continuations(observations, k=4, lengths=pair.prefix_lengths, num_samples=16)
+```
+
+In the [anchored example](examples/anchored_mess3.yaml), the intent is the hidden state at the end of the short prefix. The stored zero-based anchor selects that same state for both views. The anchor can also be configured as a fixed integer. In the [static example](examples/static_mess3.yaml), the intent is the HMM component chosen for the whole episode. Its hidden path IDs are local to that component. Both constructions sample one target per episode from the configured `target_probs` row for that intent. Provide the anchor as input metadata to a classifier when it varies by example.
+
+Experiment HMMs can be specified inline or loaded from a file relative to the experiment YAML. Loaders accept `device` and `dtype` arguments. To reproduce samples, pass a `torch.Generator(device=model.device).manual_seed(42)` to the sampling methods for that device.
+
+Conditional sampling returns suffixes shaped `[batch, num_samples, k]`. For short categorical suffixes, compute exact conditional probabilities by subtracting the prefix log likelihood from the extended sequence log likelihood and exponentiating.
 
 Run the tests with `python -m pip install -e '.[test]'` and `python -m pytest`.
