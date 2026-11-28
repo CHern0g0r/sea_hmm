@@ -6,14 +6,7 @@ import torch
 import yaml
 
 from .data import AnchoredIntent, StaticIntent
-from .hmm import CpGIslandModel, GaussianRegimeSwitchingHMM, Mess3, StateEmittingHMM
-
-
-_HMM_TYPES = {
-    "mess3": Mess3,
-    "cpg_island": CpGIslandModel,
-    "gaussian_regime_switching": GaussianRegimeSwitchingHMM,
-}
+from .hmm import StateEmittingHMM
 
 
 def _read_yaml(path: Path) -> object:
@@ -39,17 +32,49 @@ def _check_keys(config: dict, required: set[str], optional: set[str], name: str)
 
 def _build_hmm(config: object, device, dtype) -> StateEmittingHMM:
     config = _mapping(config, "HMM configuration")
-    _check_keys(config, {"type"}, {"params"}, "HMM configuration")
+    _check_keys(
+        config,
+        {"type", "num_states", "transition_probs", "emissions"},
+        {"name", "initial_probs"},
+        "HMM configuration",
+    )
     hmm_type = config["type"]
-    if not isinstance(hmm_type, str) or hmm_type not in _HMM_TYPES:
-        raise ValueError(f"unknown HMM type {hmm_type!r}")
-    params = _mapping(config.get("params", {}), "HMM params")
-    if "device" in params or "dtype" in params:
-        raise ValueError("pass device and dtype to the YAML loader")
+    if hmm_type not in ("discrete", "continuous"):
+        raise ValueError(f"unknown HMM type {hmm_type!r}; expected discrete or continuous")
+    num_states = config["num_states"]
+    if type(num_states) is not int or num_states < 1:
+        raise ValueError("num_states must be a positive integer")
+    transition = _matrix(config["transition_probs"], "transition_probs")
+    if transition.shape != (num_states, num_states):
+        raise ValueError(f"transition_probs must have shape ({num_states}, {num_states})")
+    emissions = _matrix(config["emissions"], "emissions")
+    if emissions.shape[0] != num_states:
+        raise ValueError(f"emissions must have {num_states} rows")
+    if hmm_type == "discrete":
+        emission_params = {"categorical": emissions}
+    else:
+        if emissions.shape[1] != 2:
+            raise ValueError("continuous emissions require one [mean, standard_deviation] row per state")
+        emission_params = {"gaussian": (emissions[:, 0], emissions[:, 1])}
+
+    return StateEmittingHMM(
+        transition,
+        name=config.get("name"),
+        initial_probs=config.get("initial_probs"),
+        device=device,
+        dtype=dtype,
+        **emission_params,
+    )
+
+
+def _matrix(values: object, name: str) -> torch.Tensor:
     try:
-        return _HMM_TYPES[hmm_type](**params, device=device, dtype=dtype)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"invalid {hmm_type} params: {exc}") from exc
+        matrix = torch.as_tensor(values, dtype=torch.float64, device="cpu")
+    except (TypeError, ValueError, RuntimeError) as exc:
+        raise ValueError(f"{name} must be a rectangular numeric matrix") from exc
+    if matrix.ndim != 2 or not all(matrix.shape):
+        raise ValueError(f"{name} must be a nonempty matrix")
+    return matrix
 
 
 def load_hmm(
@@ -58,7 +83,7 @@ def load_hmm(
     device: str | torch.device | None = None,
     dtype: torch.dtype = torch.float64,
 ) -> StateEmittingHMM:
-    """Load a process YAML file containing a type and optional params."""
+    """Load a discrete or continuous HMM from a YAML state and emission specification."""
     return _build_hmm(_read_yaml(Path(path)), device, dtype)
 
 

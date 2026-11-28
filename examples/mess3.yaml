@@ -1,4 +1,12 @@
-type: mess3
-params:
-  switch_prob: 0.05
-  match_prob: 0.85
+# Shai et al., Transformers Represent Belief State Geometry, Appendix A.3.
+type: discrete
+name: Mess3
+num_states: 3
+transition_probs:
+  - [0.90, 0.05, 0.05]
+  - [0.05, 0.90, 0.05]
+  - [0.05, 0.05, 0.90]
+emissions:
+  - [0.850, 0.075, 0.075]
+  - [0.075, 0.850, 0.075]
+  - [0.075, 0.075, 0.850]

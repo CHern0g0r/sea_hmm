@@ -1,7 +1,9 @@
-type: gaussian_regime_switching
-params:
-  transition_probs:
-    - [0.95, 0.05]
-    - [0.05, 0.95]
-  means: [-1.0, 1.0]
-  stds: [1.0, 1.0]
+type: continuous
+name: Gaussian Regime-Switching HMM
+num_states: 2
+transition_probs:
+  - [0.95, 0.05]
+  - [0.05, 0.95]
+emissions:
+  - [-1.0, 1.0]  # mean, standard deviation
+  - [1.0, 1.0]

@@ -35,12 +35,16 @@ class StateEmittingHMM:
         self,
         transition_probs: Sequence[Sequence[float]] | Tensor,
         *,
+        name: str | None = None,
         initial_probs: Sequence[float] | Tensor | None = None,
         device: str | torch.device | None = None,
         dtype: torch.dtype = torch.float64,
         categorical: Sequence[Sequence[float]] | Tensor | None = None,
         gaussian: tuple[Sequence[float] | Tensor, Sequence[float] | Tensor] | None = None,
     ) -> None:
+        if name is not None and (not isinstance(name, str) or not name.strip()):
+            raise ValueError("name must be a nonempty string")
+        self.name = name
         if dtype not in (torch.float32, torch.float64):
             raise ValueError("dtype must be torch.float32 or torch.float64")
         if device is None:
