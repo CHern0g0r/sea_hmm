@@ -9,7 +9,7 @@ from sea_hmm.data import AnchoredIntent, StaticIntent
 from sea_hmm.hmm import StateEmittingHMM
 
 
-EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
+EXAMPLES = Path(__file__).resolve().parents[1] / "cfg"
 INITIAL = (0.5, 0.5)
 TRANSITION = ((0.8, 0.2), (0.1, 0.9))
 EMISSIONS = ((0.75, 0.25), (0.25, 0.75))
@@ -142,7 +142,7 @@ def test_hmm_continuations_transition_after_the_prefix():
 
 @pytest.mark.parametrize("name", ("mess3", "cpg_island", "gaussian_regime_switching"))
 def test_process_yaml_examples(name):
-    model = load_hmm(EXAMPLES / f"{name}.yaml", device="cpu", dtype=torch.float32)
+    model = load_hmm(EXAMPLES / "process" / f"{name}.yaml", device="cpu", dtype=torch.float32)
     batch = model.sample([4, 2], generator=_seeded())
     assert model.filter(batch.observations, lengths=batch.lengths).dtype == torch.float32
     assert model.log_likelihood(batch.observations, lengths=batch.lengths).isfinite().all()

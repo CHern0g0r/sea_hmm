@@ -65,6 +65,11 @@ class AnchoredIntent:
         self.anchor = anchor
         self._target_probs = _target_table(target_probs, hmm.num_states, hmm)
 
+    @property
+    def target_probs(self) -> Tensor:
+        """Return the conditional target distributions in anchor-state order."""
+        return self._target_probs.clone()
+
     @torch.no_grad()
     def sample(
         self, prefix_lengths: Lengths, k: int, *, generator: torch.Generator | None = None
@@ -144,6 +149,11 @@ class StaticIntent:
         )
         self._log_prior = self._prior.log()
         self._target_probs = _target_table(target_probs, len(self.components), first)
+
+    @property
+    def target_probs(self) -> Tensor:
+        """Return the conditional target distributions in component order."""
+        return self._target_probs.clone()
 
     @torch.no_grad()
     def sample(

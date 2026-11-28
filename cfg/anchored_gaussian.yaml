@@ -1,0 +1,6 @@
+type: anchored
+hmm: process/gaussian_regime_switching.yaml
+anchor: prefix_end
+target_probs:
+  - [0.85, 0.15]
+  - [0.15, 0.85]

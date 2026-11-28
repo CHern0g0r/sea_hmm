@@ -94,24 +94,37 @@ def load_experiment(
     dtype: torch.dtype = torch.float64,
 ) -> AnchoredIntent | StaticIntent:
     """Load a latent-intent experiment with inline or file-based HMMs."""
-    path = Path(path)
-    config = _mapping(_read_yaml(path), "experiment configuration")
+    return _build_experiment(_read_experiment(Path(path)), device=device, dtype=dtype)
 
-    def build_component(specification: object) -> StateEmittingHMM:
-        if isinstance(specification, str):
-            return load_hmm(path.parent / specification, device=device, dtype=dtype)
-        return _build_hmm(specification, device, dtype)
+
+def _read_experiment(path: Path) -> dict:
+    return _resolve_experiment(_read_yaml(path), path.parent)
+
+
+def _resolve_experiment(config: object, base: Path) -> dict:
+    config = _mapping(config, "experiment configuration")
+
+    def resolve_component(specification: object) -> object:
+        return _read_yaml(base / specification) if isinstance(specification, str) else specification
 
     experiment_type = config.get("type")
     if experiment_type == "anchored":
         _check_keys(config, {"type", "hmm", "target_probs"}, {"anchor"}, "anchored configuration")
-        return AnchoredIntent(
-            build_component(config["hmm"]), config["target_probs"], anchor=config.get("anchor", "prefix_end")
-        )
+        return {**config, "hmm": resolve_component(config["hmm"])}
     if experiment_type == "static":
         _check_keys(config, {"type", "components", "prior", "target_probs"}, set(), "static configuration")
         if not isinstance(config["components"], list):
             raise ValueError("components must be a YAML sequence of HMM configurations or paths")
-        components = [build_component(component) for component in config["components"]]
-        return StaticIntent(components, config["prior"], config["target_probs"])
+        return {**config, "components": [resolve_component(component) for component in config["components"]]}
     raise ValueError(f"unknown experiment type {experiment_type!r}")
+
+
+def _build_experiment(config: dict, *, device, dtype) -> AnchoredIntent | StaticIntent:
+    if config["type"] == "anchored":
+        return AnchoredIntent(
+            _build_hmm(config["hmm"], device, dtype),
+            config["target_probs"],
+            anchor=config.get("anchor", "prefix_end"),
+        )
+    components = [_build_hmm(component, device, dtype) for component in config["components"]]
+    return StaticIntent(components, config["prior"], config["target_probs"])

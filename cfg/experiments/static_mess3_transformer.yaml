@@ -1,0 +1,29 @@
+intent: ../static_mess3.yaml
+device: auto
+seed: 42
+output_dir: ../../runs/static_mess3_transformer
+data:
+  mode: pre_generated
+  dataset_path: ../../runs/datasets/static_mess3.pt
+  prefix_lengths: [8, 16, 32]
+  lookahead: 3
+  train_size: 4096
+  validation_size: 512
+  test_size: 512
+model:
+  type: transformer
+  width: 64
+  layers: 4
+  heads: 1
+  feedforward: 128
+  dropout: 0.1
+training:
+  epochs: 6
+  batch_size: 128
+  learning_rate: 0.0003
+  ensemble_size: 3
+evaluation:
+  modes: [oracle, ensemble, single]
+  continuation_method: enumerate
+  max_enumerated_suffixes: 256
+  batch_size: 128

@@ -10,7 +10,7 @@ from sea_hmm.config import load_hmm
 from sea_hmm.hmm import StateEmittingHMM
 
 
-EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
+EXAMPLES = Path(__file__).resolve().parents[1] / "cfg" / "process"
 PROCESSES = ("mess3", "cpg_island", "gaussian_regime_switching")
 
 

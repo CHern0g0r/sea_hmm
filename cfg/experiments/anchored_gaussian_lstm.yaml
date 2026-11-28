@@ -1,0 +1,27 @@
+intent: ../anchored_gaussian.yaml
+device: auto
+seed: 42
+output_dir: ../../runs/anchored_gaussian_lstm
+data:
+  mode: online
+  dataset_path: ../../runs/datasets/anchored_gaussian.pt
+  prefix_lengths: [8, 16, 32]
+  lookahead: 4
+  train_size: 4096
+  validation_size: 512
+  test_size: 512
+model:
+  type: lstm
+  width: 64
+  layers: 1
+  dropout: 0.1
+training:
+  epochs: 6
+  batch_size: 128
+  learning_rate: 0.001
+  ensemble_size: 3
+evaluation:
+  modes: [oracle, ensemble, single]
+  continuation_method: sample
+  num_continuations: 64
+  batch_size: 128
