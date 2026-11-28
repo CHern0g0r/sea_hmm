@@ -1,6 +1,10 @@
 # SEA HMM experiments
 
-Install with `python -m pip install -e .`. Sampling and inference use CUDA when available. Install a CUDA-enabled PyTorch build for GPU use, or set `device="cpu"` to run on CPU.
+## Environment
+
+From the repository root, run `uv sync --locked --extra test` to create the local `.venv` with the Python version in `.python-version` and the dependencies in `uv.lock`. Use `uv run --locked --extra test pytest` to run the tests and `uv run --locked python` to try the examples.
+
+Sampling and inference use CUDA when the installed PyTorch build and the host driver support it. Set `device="cpu"` to run on CPU.
 
 ## State-emitting HMMs
 
@@ -42,5 +46,3 @@ In the [anchored example](examples/anchored_mess3.yaml), the intent is the hidde
 Experiment HMMs can be specified inline or loaded from a file relative to the experiment YAML. Loaders accept `device` and `dtype` arguments. To reproduce samples, pass a `torch.Generator(device=model.device).manual_seed(42)` to the sampling methods for that device.
 
 Conditional sampling returns suffixes shaped `[batch, num_samples, k]`. For short categorical suffixes, compute exact conditional probabilities by subtracting the prefix log likelihood from the extended sequence log likelihood and exponentiating.
-
-Run the tests with `python -m pip install -e '.[test]'` and `python -m pytest`.
